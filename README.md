@@ -32,6 +32,28 @@ Heatmaps based on the differentially accessible peaks identified between TCROT1(
 ### Motif analyses
 For identifying motifs enriched in differentially accessible peaks, we utilized HOMER via marge v0.0.4. HOMER was run separately on hyper- or hypo-accessible peaks with the flags -size given and -mask. Motifs enriched in hyper- or hypo-accessible peaks were determined by comparing the rank differences (based on P value). The consensus peakset identified by DiffBind was used as the background set.
 
-## Package versions
-  
-## References
+## Software used
+
+| Software           | Version    | Authors           | URL                                                               |
+|--------------------|------------|-------------------|-------------------------------------------------------------------|
+| STAR               | v2.6.0c    | Dobin et al.      | [GitHub](https://github.com/alexdobin/STAR/releases)             |
+| featureCounts     | v1.6.2      | Liao et al.       | [Subread](https://subread.sourceforge.net/featureCounts.html)    |
+| R                  | v4.1.0      | R Core Team       | [CRAN](https://cran.r-project.org)                               |
+| DESeq2             | v1.34.0     | Love et al.       | [Bioconductor](https://bioconductor.org/packages/release/bioc/html/DESeq2.html) |
+| ggplot2            | v3.4.1      | Wickham           | [CRAN](https://cran.r-project.org/web/packages/ggplot2/index.html) |
+| pheatmap           | v1.0.12     | Kolde             | [CRAN](https://cran.r-project.org/web/packages/pheatmap/index.html) |
+| fgsea              | v1.20.0     | Korotkevich et al.| [Bioconductor](https://bioconductor.org/packages/release/bioc/html/fgsea.html) |
+| clusterProfiler    | v4.2.2      | Guangchuang et al.| [Bioconductor](https://bioconductor.org/packages/release/bioc/html/clusterProfiler.html) |
+| BWA                | v0.7.17     | Li et al.         | [Bio-BWA](https://bio-bwa.sourceforge.net)                       |
+| samtools           | v1.8        | Danecek et al.    | [HTSlib](http://www.htslib.org)                                  |
+| Picard tools       | v2.18.9     | Broad Institute   | [GitHub](https://broadinstitute.github.io/picard/)               |
+| MACS               | v2.1.1      | Zhang et al.      | [GitHub](https://github.com/macs3-project/MACS)                 |
+| DiffBind           | v3.4.11     | Stark and Brown   | [Bioconductor](https://bioconductor.org/packages/release/bioc/html/DiffBind.html) |
+| ChIPseeker         | v1.30.3     | Wang et al.       | [Bioconductor](https://www.bioconductor.org/packages/release/bioc/html/ChIPseeker.html) |
+| deepTools          | v3.1.0      | Ramírez et al.    | [Documentation](https://deeptools.readthedocs.io/en/develop/)    |
+| bigWigMerge        | UCSC KentUtils | Kuhn et al.   | [GitHub](https://github.com/ucscGenomeBrowser/kent)              |
+| IGV                | -          | Robinson et al.   | [Documentation](https://igv.org/doc/desktop/)                    |
+| profileplyr        | v1.10.2     | Carroll and Barrows | [Bioconductor](https://www.bioconductor.org/packages/release/bioc/html/profileplyr.html) |
+| ComplexHeatmap     | v2.15.1     | Gu                | [Bioconductor](https://bioconductor.org/packages/release/bioc/html/ComplexHeatmap.html) |
+| HOMER              | v4.10-0     | Heinz et al.      | [HOMER](http://homer.ucsd.edu/homer/motif/)                      |
+| marge              | v0.0.4      | Amezquita         | [GitHub](https://github.com/robertamezquita/marge)               |
