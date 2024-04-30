@@ -1,0 +1,59 @@
+---
+title: Over-representation testing
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=FALSE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(kableExtra))
+suppressMessages(library(ggrepel))
+suppressMessages(library(pheatmap))
+suppressMessages(library(gplots))
+suppressMessages(library(openxlsx))
+```
+
+
+```{r barplot, context="data", fig.height=3, fig.width=8, fig.align="center"}
+ort = read.xlsx("./clusterProfiler_TCR.OTI.SMARTA_vs_TCR.OTI_GO_BP.sig.xlsx")
+up = c("GO:0042110", "GO:0060759", "GO:0001959", "GO:0001819", "GO:1902105", "GO:0032649", "GO:0002347")
+down = c("GO:0090068", "GO:2000573", "GO:0032206", "GO:0010820")
+
+subset_df <- ort[ort$ID %in% c(up, down), ]
+subset_df$Direction <- ifelse(subset_df$ID %in% up, "up", "down")
+subset_df$log_p.adjust = -log10(subset_df$p.adjust)
+
+subset_df$ID <- paste0(subset_df$Description, " ", subset_df$ID)
+
+sorted_df <- subset_df %>%
+  group_by(Direction) %>%
+  arrange(Direction, log_p.adjust) %>%
+  summarise(sorted_ID = list(ID))
+
+
+subset_df$ID = factor(subset_df$ID, levels=c(rev(sorted_df$sorted_ID[sorted_df$Direction == "down"][[1]]),
+                                             sorted_df$sorted_ID[sorted_df$Direction == "up"][[1]]))
+
+ggplot(subset_df, aes(x = ifelse(Direction == "up", log_p.adjust, -log_p.adjust), y = ID, fill = Direction)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  labs(x = "-log10(adj. P-value)", y = "GO Term ID", title = "") +
+  theme_bw() + theme(legend.position = "none") + 
+  theme(axis.title.x = element_text(margin = margin(t = 10))) + 
+  scale_fill_manual(values=c("up" = "red", "down" = "blue")) + 
+    geom_vline(aes(xintercept = 0), color = "black", size = 0.5) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  +theme(axis.line.x = element_line(colour = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.background = element_blank()) + ylab("")
+```
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```

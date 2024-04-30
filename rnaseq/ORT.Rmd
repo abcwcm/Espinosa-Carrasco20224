@@ -1,0 +1,137 @@
+---
+title: Over-representation testing
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(kableExtra))
+suppressMessages(library(ggrepel))
+suppressMessages(library(pheatmap))
+suppressMessages(library(gplots))
+suppressMessages(library(clusterProfiler))
+suppressMessages(library(org.Mm.eg.db))
+```
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+counts <- read.table(file = "gene.counts.txt", header = TRUE, check.names=FALSE, row.names=1)
+decoderFile <- "decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential expression analysis
+
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind=TRUE)
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+
+
+# ORT {.tabset}
+
+We performed over-representation testing (ORT) to determine whether there was a significant overlap of the genes that we found to be differentially expressed (DEG) in either direction.
+I.e., for each group ("up" or "down"), we compared the overlap of the respective list with the lists of pre-determined gene sets as maintained by the GO term consortium ([http://geneontology.org/](http://geneontology.org/)) or the KEGG pathways ([https://www.genome.jp/kegg/)).
+This was done using the `compareCluster` function of the `clusterProfiler` R package, where the ORA test is based on hypergeometric distribution with additional multiple hypothesis-testing correction [Yu et al., 2012](https://www.liebertpub.com/doi/10.1089/omi.2011.0118). [Yu et al., 2016](https://pubs.rsc.org/en/content/articlelanding/2016/MB/C5MB00663E#!divAbstract).
+
+```{r ort, message=FALSE, warning=FALSE, cache=TRUE, fig.width=5.5, fig.height=10, context="data", fig.align='center'}
+deg <- OT1.SMARTA_vs_OT1 %>% as.data.frame()
+
+## get entrez IDs
+eg <- clusterProfiler::bitr(row.names(deg), fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Mm.eg.db") %>% as.data.table
+setnames(eg, names(eg), c("gene_symbol", "entrez"))
+
+## get data.table for more ease 
+deg.dt <- as.data.table(deg, keep.rownames = TRUE)
+setnames(deg.dt, "rn", "gene_symbol")
+
+## define the two groups: up / down (sign. changing)
+deg.dt[, direction:= ifelse(log2FoldChange > 0 & padj <= alphaTR, "up",
+                            ifelse(log2FoldChange < 0 & padj <= alphaTR, "down", "n.s"))]
+
+## add entrez IDs to DE results
+deg.dt <- deg.dt[eg, on = "gene_symbol"]
+
+## for clusterCompare
+clstcomp.list <- sapply(c("up","down"), function(x) deg.dt[direction == x]$entrez )
+
+cp.GO_bp <- compareCluster(clstcomp.list, fun = "enrichGO", OrgDb = org.Mm.eg.db, universe = unique(deg.dt$entrez), ont = "BP", pvalueCutoff = 0.05, pAdjustMethod = "BH", readable=TRUE)
+cp.GO_cc <- compareCluster(clstcomp.list, fun = "enrichGO", OrgDb = org.Mm.eg.db, universe = unique(deg.dt$entrez), ont = "CC", pvalueCutoff = 0.05, pAdjustMethod = "BH", readable=TRUE)
+cp.GO_mf <- compareCluster(clstcomp.list, fun = "enrichGO", OrgDb = org.Mm.eg.db, universe = unique(deg.dt$entrez), ont = "MF", pvalueCutoff = 0.05, pAdjustMethod = "BH", readable=TRUE)
+```
+
+## Biological processes
+
+```{r ,fig.width=10, fig.height = 9, message = FALSE, cache=TRUE, fig.align='center'}
+dotplot(cp.GO_bp , showCategory = 20, title="Over-represented GO terms (Biological Processes)", label_format=50)
+openxlsx::write.xlsx(as.data.frame(cp.GO_bp), "clusterProfiler_TCR.OTI.SMARTA_vs_TCR.OTI_GO_BP.sig.xlsx")
+as.data.frame(cp.GO_bp) %>% DT::datatable(extensions = 'Buttons', options = list(scrollX = TRUE,dom = 'Bfrtip', buttons = list( list(extend = 'csv',   filename =  paste("OT1.SMARTA_vs_OT1", "ORT_BP", sep = "_")),list(extend = 'excel', filename =  paste("OT1.SMARTA_vs_OT1", "ORT_BP", sep = "_")))))
+```
+
+## Ceullar components 
+
+```{r ,fig.width=10, fig.height = 9, message = FALSE, cache=TRUE, fig.align='center'}
+dotplot(cp.GO_cc , showCategory = 20, title="Over-represented GO terms (Cellular Components)") 
+openxlsx::write.xlsx(as.data.frame(cp.GO_cc), "clusterProfiler_TCR.OTI.SMARTA_vs_TCR.OTI_GO_CC.sig.xlsx")
+as.data.frame(cp.GO_cc) %>% DT::datatable(extensions = 'Buttons', options = list(scrollX = TRUE,dom = 'Bfrtip', buttons = list( list(extend = 'csv',   filename =  paste("OT1.SMARTA_vs_OT1", "ORT_Cc", sep = "_")),list(extend = 'excel', filename =  paste("OT1.SMARTA_vs_OT1", "ORT_CC", sep = "_")))))
+```
+
+## Molecular functions
+
+```{r, fig.width=10, fig.height = 9, message = FALSE, cache=TRUE, fig.align='center'}
+dotplot(cp.GO_mf , showCategory = 20, title="Over-represented GO terms (Molecular Functions)") 
+openxlsx::write.xlsx(as.data.frame(cp.GO_mf), "clusterProfiler_TCR.OTI.SMARTA_vs_TCR.OTI_GO_MF.sig.xlsx")
+as.data.frame(cp.GO_mf) %>% DT::datatable(extensions = 'Buttons', options = list(scrollX = TRUE,dom = 'Bfrtip', buttons = list( list(extend = 'csv',   filename =  paste("OT1.SMARTA_vs_OT1", "ORT_MF", sep = "_")),list(extend = 'excel', filename =  paste("OT1.SMARTA_vs_OT1", "ORT_MF", sep = "_")))))
+```
+
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```

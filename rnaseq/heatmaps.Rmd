@@ -1,0 +1,184 @@
+---
+title: Heatmaps
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(kableExtra))
+suppressMessages(library(ggrepel))
+suppressMessages(library(pheatmap))
+suppressMessages(library(gplots))
+suppressMessages(library(magrittr))
+suppressMessages(library(openxlsx))
+```
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+counts <- read.table(file = "gene.counts.txt", header = TRUE, check.names=FALSE, row.names=1)
+decoderFile <- "decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential expression analysis
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind=TRUE)
+baseMeanPerLvl <- sapply( levels(vsd$group), function(lvl) rowMeans( assay(vsd)[,vsd$group == lvl, drop=F] ) )
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+
+```{r save_degs, eval=T, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE,  fig.width=8.3, fig.height=10}
+tfs <- read.table("Mus_musculus_TF_v4_2_2023.txt", sep="\t", header=T, stringsAsFactors = F) 
+tfs <- unique(as.character(tfs$Symbol))
+
+cytokines =  fread("msigdb_gene_fam_cytokines_and_growth_factors.txt", header=F)
+cytokines = stringr::str_to_title(cytokines$V1)
+
+cell_diff_markers =  fread("msigdb_gene_fam_cell_differentiation_markers.txt", header=F)
+cell_diff_markers = stringr::str_to_title(cell_diff_markers$V1)
+
+protein_kinases =  fread("msigdb_gene_fam_protein_kinases.txt", header=F)
+protein_kinases = stringr::str_to_title(protein_kinases$V1)
+
+df =  as.data.frame(OT1.SMARTA_vs_OT1)
+wb <- createWorkbook()
+posStyle <- createStyle(fontColour = "#000000", bgFill = "#C6EFCE")
+name = "OT1.SMARTA_vs_OT1"
+addWorksheet(wb, name)
+forExcel = merge(baseMeanPerLvl[,c("TCR.OTI.SMARTA", "TCR.OTI")], df, by="row.names")
+forExcel <- forExcel[order(forExcel$padj),]
+writeData(wb, name, forExcel, rowNames=T, keepNA=T) 
+rule=eval(paste0("$",LETTERS[which(colnames(forExcel) == "padj")+1],paste0("2<",alphaTR)))
+conditionalFormatting(wb, name, cols=1:(ncol(forExcel)+1), rows=2:nrow(df), rule=rule,  style = posStyle)
+freezePane(wb, name, firstActiveRow = 2)
+setColWidths(wb, name, cols = 1:ncol(forExcel), widths = "auto")
+
+name="TFs"
+addWorksheet(wb, name)
+forExcel_sub = subset(forExcel, Row.names %in% tfs)
+writeData(wb, name, forExcel_sub, rowNames=T, keepNA=T)
+rule=eval(paste0("$",LETTERS[which(colnames(forExcel_sub) == "padj")+1],paste0("2<",alphaTR)))
+conditionalFormatting(wb, name, cols=1:(ncol(forExcel_sub)+1), rows=2:nrow(df), rule=rule,  style = posStyle)
+freezePane(wb, name, firstActiveRow = 2)
+setColWidths(wb, name, cols = 1:ncol(forExcel_sub), widths = "auto")
+
+name="Cytokines_GFs"
+addWorksheet(wb, name)
+forExcel_sub = subset(forExcel, Row.names %in% cytokines)
+writeData(wb, name, forExcel_sub, rowNames=T, keepNA=T)
+rule=eval(paste0("$",LETTERS[which(colnames(forExcel_sub) == "padj")+1],paste0("2<",alphaTR)))
+conditionalFormatting(wb, name, cols=1:(ncol(forExcel_sub)+1), rows=2:nrow(df), rule=rule,  style = posStyle)
+freezePane(wb, name, firstActiveRow = 2)
+setColWidths(wb, name, cols = 1:ncol(forExcel_sub), widths = "auto")
+
+name="Cell_diff_markers"
+addWorksheet(wb, name)
+forExcel_sub = subset(forExcel, Row.names %in% cell_diff_markers)
+writeData(wb, name, forExcel_sub, rowNames=T, keepNA=T)
+rule=eval(paste0("$",LETTERS[which(colnames(forExcel_sub) == "padj")+1],paste0("2<",alphaTR)))
+conditionalFormatting(wb, name, cols=1:(ncol(forExcel_sub)+1), rows=2:nrow(df), rule=rule,  style = posStyle)
+freezePane(wb, name, firstActiveRow = 2)
+setColWidths(wb, name, cols = 1:ncol(forExcel_sub), widths = "auto")
+
+name="Protein_kinases"
+addWorksheet(wb, name)
+forExcel_sub = subset(forExcel, Row.names %in% protein_kinases)
+writeData(wb, name, forExcel_sub, rowNames=T, keepNA=T)
+rule=eval(paste0("$",LETTERS[which(colnames(forExcel_sub) == "padj")+1],paste0("2<",alphaTR)))
+conditionalFormatting(wb, name, cols=1:(ncol(forExcel_sub)+1), rows=2:nrow(df), rule=rule,  style = posStyle)
+freezePane(wb, name, firstActiveRow = 2)
+setColWidths(wb, name, cols = 1:ncol(forExcel_sub), widths = "auto")
+
+saveWorkbook(wb = wb, file = "DESeq2_OT1.SMARTA_vs_OT1.xlsx", overwrite=T)
+```
+
+
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+
+
+# Heatmaps
+
+##  TFs
+
+```{r select_tfs, eval=T,  warning=FALSE, cache=FALSE,comment=FALSE, echo=FALSE,  fig.width=7, fig.height=10,results="asis", fig.align="center"}
+selected_genes <-  c("Tox", "Irf8", "Irf4", "Nr4a2", "Nr4a1", "Bach2", "Satb1", "Lef1", "Smad7", "Id2", "Irf7", "Tcf7", "Stat2")
+selected_genes[! selected_genes %in%  row.names(de.all.sig$OT1.SMARTA_vs_OT1)]
+selected_genes_lbls <- selected_genes
+
+p1 = pheatmap(assay(vsd)[selected_genes,], scale="row",  show_rownames = TRUE,cluster_rows = FALSE, cluster_cols = F, gaps_col = c(4), main="TFs", fontsize_row = 16, col =  bluered(50), cellwidth=20, cellheight=15,  border_color=NA, treeheight_row = 0)
+print(p1)
+```
+
+## Inhibitory receptors/activation markers
+
+```{r inhib_recep_act, eval=T,  warning=FALSE, cache=FALSE,comment=FALSE, echo=FALSE,  fig.width=7, fig.height=10,results="asis", fig.align="center",fig.path='heatmap_figs/', dev=c('png','pdf')}
+#breaksList = seq(-2, 2, by = .1)
+selected_genes <-  c("Cd101", "Lag3", "Cd244")
+selected_genes[! selected_genes %in%  row.names(de.all.sig$OT1.SMARTA_vs_OT1)]
+selected_genes = selected_genes[selected_genes %in%  row.names(de.all.sig$OT1.SMARTA_vs_OT1)]
+
+selected_genes_lbls <- selected_genes
+pheatmap(assay(vsd)[selected_genes,], scale="row",  show_rownames = TRUE,cluster_rows = FALSE, cluster_cols = F, gaps_col = c(4), main="Inhibitory receptors/activation markers", fontsize_row = 16, col =  bluered(50), cellwidth=20, cellheight=15,  border_color=NA, treeheight_row = 0)
+```
+
+## Chemokine Receptors and chemokines:
+
+```{r chemokine_recep, eval=T,  warning=FALSE, cache=FALSE,comment=FALSE, echo=FALSE,  fig.width=7, fig.height=10,results="asis", fig.align="center",fig.path='heatmap_figs/', dev=c('png','pdf')}
+gmt.reactome  = clusterProfiler::read.gmt("/Users/pz/Desktop/work/brianna_schietingerlab/rnaseq/msigdb_v2022.1.Mm/msigdb_v2022.1.Mm_GMTs/m2.cp.reactome.v2022.1.Mm.symbols.gmt")  %>% tibble() %>% mutate_if(is.factor, as.character) %>%  split(x = .$gene, f = .$term) 
+
+selected_genes <- c(gmt.reactome$REACTOME_CHEMOKINE_RECEPTORS_BIND_CHEMOKINES)
+selected_genes[! selected_genes %in%  row.names(de.all.sig$OT1.SMARTA_vs_OT1)]
+selected_genes = selected_genes[selected_genes %in%  row.names(de.all.sig$OT1.SMARTA_vs_OT1)]
+
+selected_genes_lbls <- selected_genes
+pheatmap(assay(vsd)[selected_genes,], scale="row",  show_rownames = TRUE,cluster_rows = TRUE, cluster_cols = F, gaps_col = c(4), main="REACTOME_CHEMOKINE_RECEPTORS_BIND_CHEMOKINES", fontsize_row = 16, col =  bluered(50), cellwidth=20, cellheight=15,  border_color=NA, treeheight_row = 0)
+```
+
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```

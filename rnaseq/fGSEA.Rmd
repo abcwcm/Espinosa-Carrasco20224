@@ -1,0 +1,213 @@
+---
+title:  fGSEA
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  html_document:
+    code_folding: hide
+    theme: space
+    toc: yes
+    toc_depth: 3
+    toc_float: no
+  BiocStyle::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+  knitrBootstrap::bootstrap_document:
+    highlight.chooser: yes
+    theme.chooser: yes
+  pdf_document:
+    toc: yes
+always_allow_html: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE}
+knitr::opts_chunk$set(bootstrap.show.code = FALSE, message=FALSE, warning=FALSE)
+suppressMessages(library(DESeq2))
+suppressMessages(library(data.table))
+suppressMessages(library(magrittr))
+suppressMessages(library(QoRTs))
+suppressMessages(library(reshape2))
+suppressMessages(library(RColorBrewer))
+suppressMessages(library(ggplot2))
+suppressMessages(library(tidyr))
+suppressMessages(library(plyr))
+suppressMessages(library(kableExtra))
+suppressMessages(library(gtools))
+suppressMessages(library(plotly))
+suppressMessages(library(gridExtra))
+suppressMessages(library(openxlsx))
+suppressMessages(library(pathview))
+suppressMessages(library(edgeR))
+suppressMessages(library(limma))
+suppressMessages(library(openxlsx))
+suppressMessages(library(pheatmap))
+suppressMessages(library(gplots))
+suppressMessages(library(treemap))
+suppressMessages(library(scales))
+suppressMessages(library(Hmisc))
+suppressMessages(library(knitr))
+suppressMessages(library(ggrepel))
+suppressMessages(library(fgsea))
+suppressMessages(library(clusterProfiler))
+tol12qualitative=c("#9e9ac8", "#6a51a3", "#fdbe85", "#fd8d3c", "#d94701", "#74c476", "#41ab5d", "#238b45", "#005a32", "#bdd7e7", "#6baed6", "#2171b5")
+palette <- c("#d94701", "#6a51a3", "#2171b5", "#238b45")
+```
+
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+counts <- read.table(file = "gene.counts.txt", header = TRUE, check.names=FALSE, row.names=1)
+decoderFile <- "decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential expression analysis
+
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind=TRUE)
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+
+# GSEA w.r.t. 
+
+gene sets from table s6  https://www.science.org/doi/10.1126/science.abb9847 
+
+
+```{r subchunkify, echo=FALSE}
+#' https://github.com/andschar/dbreport/blob/546410a9aefc597bf78d01bb9dae0de4448439f6/R/utils.R
+#' Create sub-chunks for plots
+#'
+#' taken from: https://stackoverflow.com/questions/15365829/dynamic-height-and-width-for-knitr-plots
+#'
+#' @param pl a plot object
+#' @param fig.height figure height
+#' @param fig.width figure width
+#' @param chunk_name name of the chunk
+#'
+#' @author Andreas Scharmueller \email{andschar@@protonmail.com}
+#'
+subchunkify = function(pl,
+                       fig.height = 7,
+                       fig.width = 5,
+                       chunk_name = 'plot') {
+  pl_deparsed = paste0(deparse(function() {
+    pl
+  }), collapse = '')
+  
+  sub_chunk = paste0(
+    "```{r ",
+    chunk_name,
+    ", fig.height=",
+    fig.height,
+    ", fig.width=",
+    fig.width,
+    ", dpi=72",
+    ", echo=FALSE, message=FALSE, warning=FALSE}",
+    "\n(",
+    pl_deparsed,
+    ")()",
+    "\n```"
+  )
+  
+  cat(knitr::knit(
+    text = knitr::knit_expand(text = sub_chunk),
+    quiet = TRUE
+  ))
+}
+```
+
+```{r read_in, eval=T,  message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=T}
+library(stringr)
+gene.sets =read.xlsx("abb9847_table_s6.xlsx")
+lst <- as.list(gene.sets)
+
+lst <- lapply(lst, function(x) {
+  x <- str_to_title(tolower(x))
+  x[!is.na(x)]
+})
+
+lst = lst[c("CD39-CD69-","CD39+CD69+")]
+```
+
+```{r fgsea_custom, fig.width=7, fig.height=12 , fig.align="center", results='asis'}
+library(data.table)
+library(magrittr)
+library(ggplot2)
+
+set.seed(149)
+res <-  OT1.SMARTA_vs_OT1[!is.na(OT1.SMARTA_vs_OT1$padj),] %>% as.data.frame %>% as.data.table(., keep.rownames=TRUE)
+setnames(res, "rn", "gene_symbol")
+setorder(res, -stat)
+geneList <- res$stat
+names(geneList) <- res$gene_symbol
+
+gene.sets <- lst
+
+set.seed(149)
+fgseaRes <- fgseaMultilevel(gene.sets, geneList, minSize=15, maxSize=500)
+topPathways <- fgseaRes[padj < 0.05][order(NES), pathway]
+fgseaResSig <- subset(fgseaRes, padj < 0.05)
+mainPathways <- fgseaResSig[pathway %in% fgseaResSig$pathway][order(-NES), pathway]
+fgseaResMain <- fgseaRes[match(mainPathways, pathway)]
+
+lapply(fgseaResSig$pathway, function(y){
+  cat("\n\n###",y, "\n\n")
+  
+  subchunkify(  plot(plotEnrichment(gene.sets[[y]],geneList) + labs(title=gsub("_", " ", y), subtitle=paste0("", "; NES ",round(fgseaResSig[which(fgseaResSig$pathway == y)]$NES, 2),"; ",paste0("adj. p < ",round(fgseaResSig[which(fgseaResSig$pathway == y)]$padj, 100)) ))), fig.width=4.5, fig.height=3, chunk_name=paste0(y,"gsea"))
+  
+  breaksList = seq(-2, 2, by = .1)
+  selected_genes <-  fgseaResSig[fgseaResSig$pathway == y,]$leadingEdge[[1]]
+  selected_genes_lbls <- selected_genes
+  pheatmap(assay(vsd)[selected_genes,], scale="row",  show_rownames = TRUE,cluster_rows = TRUE, cluster_cols = F, gaps_col = c(4), main=y, fontsize_row = 12, col =  bluered(length(breaksList)), cellwidth=20, cellheight=10, breaks = breaksList, border_color = NA)
+  plot.new() ;
+}) %>%  invisible()
+```
+
+
+
+
+***
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="",echo=FALSE, fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```
+
+# References

@@ -1,0 +1,100 @@
+---
+title: MA plot
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(kableExtra))
+suppressMessages(library(ggrepel))
+```
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+counts <- read.table(file = "gene.counts.txt", header = TRUE, check.names=FALSE, row.names=1)
+decoderFile <- "decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential expression analysis
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+
+
+# MA-plot
+
+Scatter plot of log2 fold changes (on the y-axis) versus the mean of normalized counts (on the x-axis).
+
+```{r plotMA, message=FALSE, warning=FALSE, cache=TRUE, fig.width=5.5, fig.height=5, context="data", fig.align='center', fig.align="center",fig.path='maplot_figs/', dev=c('png','pdf')}
+goi <- c("Itgae", "Tcf7", "Lef1", "Tox", "Spry1", "Spry2", "Cd244", "Lag3",  "Bach2", "Nr4a1", "Egr2", "Zbtb32",  "Satb1",   "Tgfbr2", "Il7r")
+  
+data = OT1.SMARTA_vs_OT1 %>% as.data.frame()
+
+isDE <- ifelse(is.na(data[["padj"]]), FALSE, data[["padj"]] < alphaTR)
+
+df <- data.frame(gene = row.names(data), mean = data[["baseMean"]], lfc = data[["log2FoldChange"]], padj = data[["padj"]], isDE = isDE, row.names=row.names(data))
+py = df$lfc
+ylim = c(-1, 1) * quantile(abs(py[is.finite(py)]), probs = 0.99) * 1.1
+
+ggplot(df, aes(log2(mean), lfc, label=gene)) +
+  geom_point(size=1, alpha=0.15, color = 
+ifelse(df$padj < 0.05 & df$lfc > 0, "red", ifelse(df$padj < 0.05 & df$lfc < 0, "blue", "gray80"))) +
+  geom_hline(aes(yintercept = 0), colour = "red", size = 0.45) +
+  xlab("Log2 mean of normalized counts") +
+  ylab("Fold change, log2(OT1.SMARTA_vs_OT1)") + 
+  theme_bw() + theme(legend.position="bottom") +
+  ylim(ylim) + 
+  ggtitle("OT1.SMARTA_vs_OT1") + 
+    geom_text_repel(data=subset(df[goi,], isDE == TRUE), size=6, segment.color="transparent", color="black", fontface=3) +
+  geom_point(data=subset(df[goi,], isDE == TRUE), shape=1, size=2, color="black")
+```
+
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```
