@@ -1,0 +1,225 @@
+---
+title: Motif analysis with homer
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  BiocStyle::html_document:
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(DiffBind))
+suppressMessages(library(kableExtra))
+suppressMessages(library(TxDb.Mmusculus.UCSC.mm10.knownGene))
+suppressMessages(library(marge))
+```
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+DB <- readRDS("2022_01.DB_gabriel.Rds")
+db <- dba.count(DB, peaks=NULL, score=DBA_SCORE_READS)
+consensus_peaks <- dba.peakset(db, bRetrieve=TRUE)
+counts = as.data.frame(mcols(consensus_peaks))
+row.names(counts) = paste0(as.data.frame(consensus_peaks)$seqnames, ":",as.data.frame(consensus_peaks)$start,"-",as.data.frame(consensus_peaks)$end)
+decoderFile <- "atac_decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential accessibility analysis
+
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind=TRUE)
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+#  Homer
+
+Homer was run on the differentially accessible peaks, split by fold-change.
+The full peak atlas was used as background.
+
+Size = 'given'
+
+```{r homer, eval=T,  warning=FALSE, cache=TRUE,comment=FALSE, echo=FALSE, fig.width=15, fig.height=10}
+bg = consensus_peaks  %>% as.data.frame()
+bg = data.frame(chr=bg$seqnames, start=bg$start, end=bg$end)
+write.table(bg, file = "peak_atlas.bed", quote=F, row.names =F, col.names=F, sep="\t")
+
+# https://robertamezquita.github.io/marge/
+options('homer_path' = '/Users/pz/miniconda3/share/homer-4.10-0/')
+check_homer()
+
+dir.create("./homer_results/", showWarnings = FALSE, recursive = FALSE, mode = "0777")
+
+name = "OT1.SMARTA_vs_OT1"
+
+# positive fold change
+dir.create(paste0("./homer_results/",paste0(name,"_posFC")), showWarnings = FALSE, recursive = FALSE, mode = "0777")
+results_dir = paste0("./homer_results/",paste0(name,"_posFC"))
+
+da_peaks <- OT1.SMARTA_vs_OT1 %>% as.data.frame()
+da_peaks$peak = row.names(da_peaks)
+spl <- strsplit(gsub("-|:", ".", da_peaks$peak), ".", fixed = TRUE)
+da_peaks$seqnames = sapply(spl, "[", 1)
+da_peaks$start =sapply(spl, "[", 2)
+da_peaks$end = gsub("\\_.*","",sapply(spl, "[", 3))
+
+dt = data.table(da_peaks, keep.rownames = T)
+bed <- data.frame(dt[ padj<alphaTR &  log2FoldChange>0,c("seqnames", "start", "end")])
+names(bed) <- c("chr", "start", "end")
+write.table(bed, file = "posFC.bed", quote=F, row.names =F, col.names=F, sep="\t")
+
+find_motifs_genome(
+  bed,
+  path = results_dir,
+  genome = 'mm10r', 
+  scan_size = 'given',
+  optimize_count = 8,
+  background = bg,
+  local_background = FALSE,
+  only_known = TRUE,
+  only_denovo = FALSE,
+  fdr_num = 5,
+  cores = 2, 
+  overwrite = TRUE, 
+  keep_minimal = FALSE
+)
+
+
+# negative fold-change
+dir.create(paste0("./homer_results/",paste0(name,"_negFC")), showWarnings = FALSE, recursive = FALSE, mode = "0777")
+results_dir = paste0("./homer_results/",paste0(name,"_negFC"))
+
+bed <- data.frame(dt[ padj<alphaTR &  log2FoldChange<0,c("seqnames", "start", "end")])
+names(bed) <- c("chr", "start", "end")
+write.table(bed, file = "negFC.bed", quote=F, row.names =F, col.names=F, sep="\t")
+
+find_motifs_genome(
+  bed,
+  path = results_dir,
+  genome = 'mm10r', 
+  scan_size = 'given',
+  optimize_count = 8,
+  background = bg,
+  local_background = FALSE,
+  only_known = TRUE,
+  only_denovo = FALSE,
+  fdr_num = 5,
+  cores = 2, 
+  overwrite = TRUE, 
+  keep_minimal = FALSE
+)
+```
+
+
+
+
+
+```{r homer_plots,  eval=T, message=FALSE, warning=FALSE, cache=TRUE,comment=FALSE, echo=FALSE,fig.width=5.5, fig.height=5.5}
+
+file_list <- list.files(pattern = "knownResults.txt$", recursive = TRUE, full.names=T)
+pos_file_list <- file_list[grep("pos", file_list)]
+neg_file_list <- file_list[grep("neg", file_list)]
+
+lapply( 1:length(pos_file_list), function(x){ 
+    
+    top=10
+   ## only keep with P < 0.05
+   pos_res <- fread(pos_file_list[x])
+   
+   ## only keep with P < 0.05
+   neg_res <- fread(neg_file_list[x])
+    
+    ## keep those in common that have P < 0.05 in at least one list
+    pos_res_sig <- subset(pos_res, as.numeric(pos_res$"P-value") < 0.05) 
+    neg_res_sig <- subset(neg_res, as.numeric(neg_res$"P-value") < 0.05) 
+    common <- union(pos_res_sig$"Motif Name", neg_res_sig$"Motif Name")
+    
+    pos_res <-subset(pos_res, pos_res$"Motif Name" %in% common)
+    neg_res <-subset(neg_res, neg_res$"Motif Name" %in% common)
+
+   ## add rank
+   pos_res$rank <-  seq.int(nrow(pos_res))
+   neg_res$rank <-  seq.int(nrow(neg_res))
+
+  combined <- merge(pos_res, neg_res, by="Motif Name")
+  combined$diffRank <- combined$rank.x - combined$rank.y
+  
+  combined <- combined[order(combined$diffRank),]
+    
+  top_hits <- psych::headTail(combined, top, top, ellipsis=F)
+  top_hits <- top_hits[,c("Motif.Name","Log.P.value.x", "Log.P.value.y", "rank.x", "rank.y", "diffRank")]
+  top_hits$Motif.Name <- gsub("\\(.*","",top_hits$Motif.Name) 
+  
+  top_hits$Log.P.value.x  <- top_hits$Log.P.value.x * -1
+  top_enriched.x <-  head(top_hits, top)[,c(1,2)]
+  top_enriched.x$color <- c("red")
+  top_enriched.y <-  tail(top_hits, top)[,c(1,3)]
+  top_enriched.y$color <- c("blue")
+  
+  colnames(top_enriched.x) <- c("Motif", "Log.P", "color")
+  colnames(top_enriched.y) <- c("Motif", "Log.P", "color")
+  
+   top_hits <- rbind(top_enriched.x, top_enriched.y)
+   
+   top_hits_m <- melt(top_hits)
+   top_hits_m <- top_hits_m[order(top_hits_m$value),]
+    top_hits_m <- top_hits_m[!duplicated(top_hits_m$Motif),]
+     top_hits_m$Motif  <- toupper( top_hits_m$Motif )
+   top_hits_m$Motif <- factor(top_hits_m$Motif, levels=c(top_hits_m$Motif))
+   
+   name <- gsub("./homer_results/", "",  pos_file_list[x]) %>%  gsub("./homer/", "", .) %>% gsub("_up_posFC.bed_sizeGivenhomerOutput/knownResults.txt", "", .) %>% gsub("_posFC/knownResults.txt", "", .)
+
+   p <- ggplot(top_hits_m, aes(Motif,value, fill=color, label=Motif)) +  geom_bar(stat="identity",position="identity") + coord_flip() +theme_classic() + scale_fill_manual(values=c( "blue", "red"), labels=c(paste("Peaks opening", strsplit(name, "_vs_")[[1]][2]), paste("Peaks opening", strsplit(name, "_vs_")[[1]][1]))) + ylab("-log10(P)") + ggtitle(name) + guides(fill=guide_legend(title=NULL, reverse=TRUE)) + scale_y_continuous(breaks = pretty(top_hits_m$value), labels = abs(pretty(top_hits_m$value))) + theme(legend.position = c(0.87, 0.25)) + theme(legend.position = c(0.4, 0.9))
+
+print(p)    
+  }) %>% invisible()
+
+```
+
+
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```

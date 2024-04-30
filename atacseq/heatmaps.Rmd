@@ -1,0 +1,209 @@
+---
+title: Heatmap 
+date: '`r format(Sys.Date(), "%Y-%B-%d")`'
+output:
+  html_document:
+    code_folding: hide
+    theme: space
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, bootstrap.show.code = FALSE, results='hide', bootstrap.show.message=FALSE, warning=FALSE, cache=TRUE}
+suppressMessages(library(DESeq2))
+suppressMessages(library(DiffBind))
+suppressMessages(library(tidyverse))
+suppressMessages(library(data.table))
+suppressMessages(library(kableExtra))
+suppressMessages(library(ggrepel))
+suppressMessages(library(pheatmap))
+suppressMessages(library(gplots))
+suppressMessages(library(TxDb.Mmusculus.UCSC.mm10.knownGene))
+suppressMessages(library(openxlsx))
+suppressMessages(library(profileplyr))
+suppressMessages(library(ComplexHeatmap))
+suppressMessages(library(RColorBrewer))
+set.seed(0813185)
+```
+
+
+```{r readInData, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+DB <- readRDS("2022_01.DB_gabriel.Rds")
+db <- dba.count(DB, peaks=NULL, score=DBA_SCORE_READS)
+consensus_peaks <- dba.peakset(db, bRetrieve=TRUE)
+counts = as.data.frame(mcols(consensus_peaks))
+row.names(counts) = paste0(as.data.frame(consensus_peaks)$seqnames, ":",as.data.frame(consensus_peaks)$start,"-",as.data.frame(consensus_peaks)$end)
+decoderFile <- "atac_decoder.txt"
+decoder.data <- fread(decoderFile) %>% as.data.frame()
+decoder.data$group <- factor(decoder.data$group, levels=c("TCR.OTI", "TCR.OTI.SMARTA"))
+decoder.data <- decoder.data[decoder.data$sample.ID %in% colnames(counts),]
+counts <- counts[,c(decoder.data$sample.ID)]
+if(!identical(decoder.data$sample.ID, colnames(counts))) stop()
+```
+
+## Samples
+
+```{r printSampleTable, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+kable(decoder.data, row.names=FALSE,  padding = 0, longtable=TRUE) %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Differential accessibility analysis
+
+
+```{r runDESeq, message=FALSE, warning=FALSE, cache=TRUE, context="data"}
+coldata <- data.frame(decoder.data, row.names = colnames(counts), stringsAsFactors=F)
+coldata$group <- factor(decoder.data$group)
+dds <- DESeq2::DESeqDataSetFromMatrix(countData = counts,
+                                      colData = coldata,
+                                      design = ~group)
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+dds <- DESeq(dds)
+vsd <- DESeq2::vst(dds, blind=TRUE)
+
+alphaTR = 0.05
+
+OT1.SMARTA_vs_OT1 <- results(dds, contrast=c("group","TCR.OTI.SMARTA", "TCR.OTI"), alpha=alphaTR)
+```
+
+The following genes were detected as differentially expressed (adjusted p < `r alphaTR`):
+
+
+```{r printDEGtable, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, eval=TRUE}
+de.all = list(OT1.SMARTA_vs_OT1=OT1.SMARTA_vs_OT1)
+de.all.sig <- lapply(de.all, subset, padj < alphaTR)
+
+deg_table =  as.data.frame(sapply(de.all.sig, nrow))
+colnames(deg_table) <- paste0("padj<",alphaTR)
+
+kable(deg_table, row.names=T)  %>%  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width=F)
+```
+
+
+
+# Heatmap of DA peaks (kmeans = 2)
+
+VST normalized expression of DA peaks.
+
+```{r heatmaps, message=FALSE, warning=FALSE, cache=TRUE, fig.width=5, fig.height=5, context="data", fig.align='center'}
+
+data = OT1.SMARTA_vs_OT1 %>% subset(., padj < alphaTR) %>% as.data.frame()
+
+breaksList = seq(-1.5, 1.5, length = 100)
+
+selected_features <- row.names(data)
+
+log2.count.matrix = assay(vsd)[selected_features,]
+
+#Obtain the z-score per peak region across all the samples
+log2.count.matrix <- apply(log2.count.matrix, MARGIN = 1, FUN = function(X) (X - mean(X))/sd(X))
+log2.count.matrix <- t(log2.count.matrix)
+
+k=2
+km <- kmeans(log2.count.matrix,centers=k, iter.max=500) 
+m.kmeans<- cbind(log2.count.matrix, km$cluster) # combine the cluster with the matrix
+o<- order(m.kmeans[,ncol(m.kmeans)]) # order the last column
+colnames(m.kmeans)[ncol(m.kmeans)] <- "k"
+m.kmeans = m.kmeans[o,]
+annotation_row = data.frame(row.names=row.names(m.kmeans), km=as.factor(m.kmeans[,ncol(m.kmeans)])) 
+ordered_mat = m.kmeans[,1:ncol(m.kmeans)-1]
+
+pheatmap::pheatmap(ordered_mat, scale="none", show_rownames=F, fontsize = 10, cellwidth =25,  main = "DAPs", col=viridis::viridis(50), silent = F , cluster_rows=F, cluster_cols = F, annotation_row=annotation_row)
+
+```
+
+```{r saveHeatmapData, eval=T,  warning=FALSE, cache=TRUE, echo=FALSE,  fig.width=16, fig.height=10}
+excel_df = ordered_mat
+if(!identical(row.names(annotation_row), row.names(excel_df))) stop()
+
+OT1.SMARTA_vs_OT1_sig = OT1.SMARTA_vs_OT1 %>% subset(., padj < alphaTR) %>% as.data.frame()
+
+excel_df= merge(excel_df, OT1.SMARTA_vs_OT1_sig, by="row.names")
+row.names(excel_df) = excel_df$Row.names
+ excel_df$Row.names = NULL
+excel_df= merge(excel_df, annotation_row, by="row.names")
+colnames(excel_df)[1] = "peak"
+
+spl <- strsplit(gsub("-|:", ".", excel_df$peak), ".", fixed = TRUE)
+excel_df$chr = sapply(spl, "[", 1)
+excel_df$start =sapply(spl, "[", 2)
+excel_df$end = gsub("\\_.*","",sapply(spl, "[", 3))
+excel_df_gr = GRanges(excel_df)
+excel_df_gr_anot = ChIPseeker::annotatePeak(excel_df_gr,tssRegion = c(-1000,1000),TxDb = TxDb.Mmusculus.UCSC.mm10.knownGene,annoDb = "org.Mm.eg.db", verbose=F)
+excel_df_gr_anot_df = as.data.frame(excel_df_gr_anot)
+row.names(excel_df_gr_anot_df) = excel_df_gr_anot_df$peak
+excel_df_gr_anot_df = excel_df_gr_anot_df[row.names(ordered_mat), ]
+if(!identical(row.names(excel_df_gr_anot_df), row.names(ordered_mat))) stop()
+
+write.xlsx(excel_df_gr_anot_df, file="hm_atac_ordered.xlsx")
+```
+
+
+```{r prep_bw_hm, eval=T,  warning=FALSE, cache=TRUE, echo=FALSE,  fig.width=16, fig.height=10}
+consensus_peaks_df = consensus_peaks
+mcols(consensus_peaks_df) = NULL
+consensus_peaks_df = as.data.frame(consensus_peaks_df)
+row.names(consensus_peaks_df) = paste0(as.data.frame(consensus_peaks_df)$seqnames, ":",as.data.frame(consensus_peaks_df)$start,"-",as.data.frame(consensus_peaks_df)$end)
+
+if(!identical(row.names(annotation_row), row.names(ordered_mat))) stop()
+
+peaks_of_interest = consensus_peaks_df[row.names(ordered_mat),]
+peaks_of_interest = merge(peaks_of_interest, annotation_row, by="row.names")
+row.names(peaks_of_interest)  = peaks_of_interest$Row.names
+peaks_of_interest$Row.names = NULL
+peaks_of_interest = peaks_of_interest[row.names(ordered_mat),]
+
+write.table(data.frame(peaks_of_interest[,c(1:3)], ID=row.names(peaks_of_interest), peaks_of_interest[,c(6)]), "hm_atac_ordered.bed", sep="\t", quote=F, col.names=F, row.names = F)
+
+all_profiles =  BamBigwig_to_chipProfile(c("OT1.bw", "OT1.SMARTA.bw"),testRanges ="hm_atac_ordered.bed",style = "point",format = "bigwig",distanceAround = 1000)
+
+# table(row.names(assay(all_profiles, 1)) == row.names(assay(all_profiles, 2)))
+all = cbind(assay(all_profiles, 1),assay(all_profiles, 2))
+row.names(all) = rowData(all_profiles)$name
+
+all = all[row.names(peaks_of_interest),]
+
+table(row.names(peaks_of_interest) == row.names(all))
+#  saveRDS(all, "bw_hm_prep.Rds")
+```
+
+## Bigwig heatmap
+
+To improve visibility, bins with read counts greater than the 75th percentile + 1.5*IQR were capped at that value.
+
+
+```{r bw_heatmap_union_bg_clsrow_dend_reorder_f, eval=T,  warning=FALSE, cache=TRUE, echo=FALSE,  fig.width=3, fig.height=7}
+
+#all = readRDS("bw_hm_prep.Rds")
+
+# To improve visibility, bins with read counts greater than the 75th percentile + 1.5*IQR were capped at that value.
+# (quantile(all, c(0, .75))+IQR(all)*1.5)[2]
+
+all[all >= as.numeric((quantile(all, c(0, .75))+IQR(all)*1.5)[2])] <- as.numeric((quantile(all, c(0, .75))+IQR(all)*1.5)[2])
+
+#table(row.names(annotation_row) == row.names(all))
+
+annot_col =data.frame(cond =rep(gsub(".bw", "", metadata(all_profiles)$names), each=100),row.names=colnames(all))
+annot_col$cond = factor(annot_col$cond, levels=unique(rep(gsub(".bw", "", metadata(all_profiles)$names), each=100)))
+
+cols <- inlmisc::GetColors(n = 2, scheme="light")
+rgb2hex <- function(r,g,b) sprintf('#%s',paste(as.hexmode(c(r,g,b)),collapse = ''))
+
+ha =  ComplexHeatmap::HeatmapAnnotation(foo =  ComplexHeatmap::anno_block(gp = gpar(fill = c(rgb2hex(204,236,230),rgb2hex(198,219,239))), labels = unique(rep(gsub(".bw", "", metadata(all_profiles)$names), each=100)),labels_gp = gpar(col = c("black", "black"))))
+
+#pdf("test.pdf")
+hm = ComplexHeatmap::Heatmap(all, border=F, cluster_rows = T, cluster_columns = F, col=rev(brewer.pal(n = 11, name ='RdBu')), show_row_names = F, heatmap_legend_param = list(direction = "horizontal", title=NULL,legend_width = unit(6, "cm")), column_split = annot_col$cond, top_annotation = ha, column_title = NULL, show_column_names =F, use_raster=F, show_row_dend = F, row_split = peaks_of_interest$km, cluster_row_slices=F, row_title=NULL, row_gap = unit(0.5, "mm"), row_dend_reorder=F)  +  ComplexHeatmap::Heatmap(peaks_of_interest$km, name = "km", width = unit(3, "mm"), col = structure(cols, names = 1:2), row_split = peaks_of_interest$km, row_gap = unit(0.5, "mm"), show_heatmap_legend = F, border=T) 
+ComplexHeatmap::draw(hm, heatmap_legend_side="bottom")
+#dev.off()
+
+hm = ComplexHeatmap::Heatmap(all, border=F, cluster_rows = T, cluster_columns = F, col=rev(brewer.pal(n = 9, name ='RdBu')), show_row_names = F, heatmap_legend_param = list(direction = "horizontal", title=NULL,legend_width = unit(6, "cm")), column_split = annot_col$cond, top_annotation = ha, column_title = NULL, show_column_names =F, use_raster=F, show_row_dend = F, row_split = annotation_row$km, cluster_row_slices=F, row_title=NULL, row_gap = unit(0, "mm"), row_dend_reorder=F)
+ComplexHeatmap::draw(hm, heatmap_legend_side="bottom")
+
+```
+
+
+# Session Info
+```{r session, message=FALSE, warning=FALSE, cache=TRUE,comment="", fig.width=10, fig.height=5.5, context="data"}
+sessionInfo()
+```
